@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ type ClientConfig struct {
 	RequestFPS        int
 	RepairTimeout     time.Duration
 	NoResponseRetries int
+	LogFrames         bool
 }
 
 type Stats struct {
@@ -53,6 +55,7 @@ type Client struct {
 	nextHelloAt         time.Time
 	requestInterval     time.Duration
 	pending             *pendingResponse
+	frameLog            *os.File
 }
 
 type pendingResponse struct {
@@ -95,6 +98,15 @@ func (c *Client) Start() error {
 
 	c.server = server
 	c.conn = conn
+
+	if c.cfg.LogFrames {
+		f, err := os.OpenFile("frame_updates.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to open frame log: %w", err)
+		}
+		c.frameLog = f
+	}
+
 	go c.run()
 
 	return nil
@@ -110,6 +122,9 @@ func (c *Client) Close() {
 	close(c.stop)
 	if c.conn != nil {
 		_ = c.conn.Close()
+	}
+	if c.frameLog != nil {
+		_ = c.frameLog.Close()
 	}
 	<-c.done
 }
@@ -304,7 +319,7 @@ func (c *Client) handleFrameData(packet Packet) {
 		return
 	}
 
-	dirtyPages, err := c.applyPendingResponse()
+	updates, err := c.applyPendingResponse()
 	if err != nil {
 		log.Printf("protocol error: %v", err)
 		c.sendStatus(StatusProtocolErr, c.pending.requestID, c.pending.frameID)
@@ -314,6 +329,14 @@ func (c *Client) handleFrameData(packet Packet) {
 
 	frameID := c.pending.frameID
 	requestID := c.pending.requestID
+
+	if c.frameLog != nil {
+		fmt.Fprintf(c.frameLog, "%s: applied frame %d (%d pages)\n", time.Now().Format(time.RFC3339), frameID, len(updates))
+		for _, u := range updates {
+			fmt.Fprintf(c.frameLog, "  page %04d: %x\n", u.page, u.data)
+		}
+	}
+
 	c.lastCompleteFrameID = frameID
 	c.sendAck(requestID, frameID)
 	c.pending = nil
@@ -321,7 +344,7 @@ func (c *Client) handleFrameData(packet Packet) {
 	c.updateStats(func(stats *Stats) {
 		stats.AppliedFrames++
 		stats.LastFrameID = frameID
-		stats.LastDirtyPages = dirtyPages
+		stats.LastDirtyPages = len(updates)
 		stats.LastStatus = "frame applied"
 	})
 }
@@ -459,10 +482,10 @@ func (c *Client) missingChunks() []uint16 {
 	return missing
 }
 
-func (c *Client) applyPendingResponse() (int, error) {
+func (c *Client) applyPendingResponse() ([]pageUpdate, error) {
 	pending := c.pending
 	if pending == nil {
-		return 0, fmt.Errorf("no pending response")
+		return nil, fmt.Errorf("no pending response")
 	}
 
 	chunks := make([]uint16, 0, len(pending.chunks))
@@ -476,16 +499,16 @@ func (c *Client) applyPendingResponse() (int, error) {
 	updates := make([]pageUpdate, 0)
 	for _, chunk := range chunks {
 		if chunk != expected {
-			return 0, fmt.Errorf("missing chunk %d", expected)
+			return nil, fmt.Errorf("missing chunk %d", expected)
 		}
 		payload := pending.chunks[chunk]
 		for offset := 0; offset < len(payload); offset += PageRecordSize {
 			page := binary.LittleEndian.Uint16(payload[offset : offset+2])
 			if page < FirstSyncPage || page >= PageCount {
-				return 0, fmt.Errorf("page index out of range: %d", page)
+				return nil, fmt.Errorf("page index out of range: %d", page)
 			}
 			if page <= lastPage {
-				return 0, fmt.Errorf("page index is not strictly increasing")
+				return nil, fmt.Errorf("page index is not strictly increasing")
 			}
 			lastPage = page
 			data := make([]byte, PageSize)
@@ -506,7 +529,7 @@ func (c *Client) applyPendingResponse() (int, error) {
 	}
 	c.mirrorMu.Unlock()
 
-	return len(updates), nil
+	return updates, nil
 }
 
 type pageUpdate struct {

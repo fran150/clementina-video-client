@@ -144,6 +144,7 @@ func main() {
 		RequestFPS:        cfg.RequestFPS,
 		RepairTimeout:     cfg.RepairTimeout,
 		NoResponseRetries: cfg.NoResponseRetries,
+		LogFrames:         cfg.LogFrames,
 	})
 	if err := client.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "video client error: %v\n", err)

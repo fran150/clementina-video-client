@@ -20,6 +20,7 @@ type Config struct {
 	RepairTimeout     time.Duration
 	NoResponseRetries int
 	Scale             int
+	LogFrames         bool
 	Fullscreen        bool
 	DebugOverlay      bool
 	Title             string
@@ -44,6 +45,7 @@ func Parse(args []string) (Config, error) {
 	flags.DurationVar(&cfg.RepairTimeout, "repair-timeout", cfg.RepairTimeout, "quiet time before NACK/retry")
 	flags.IntVar(&cfg.NoResponseRetries, "no-response-retries", cfg.NoResponseRetries, "request retries before reconnect")
 	flags.IntVar(&cfg.Scale, "scale", cfg.Scale, "initial integer window scale")
+	flags.BoolVar(&cfg.LogFrames, "log-frames", cfg.LogFrames, "log applied frame updates to frame_updates.log")
 	flags.BoolVar(&cfg.Fullscreen, "fullscreen", cfg.Fullscreen, "start in fullscreen")
 	flags.BoolVar(&cfg.DebugOverlay, "debug-overlay", cfg.DebugOverlay, "show connection and frame-rate overlay")
 	flags.StringVar(&cfg.Title, "title", cfg.Title, "window title")
