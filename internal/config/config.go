@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -14,33 +15,47 @@ const (
 )
 
 type Config struct {
-	ServerAddress     string
-	BindAddress       string
-	RequestFPS        int
-	RepairTimeout     time.Duration
-	NoResponseRetries int
-	Scale             int
-	LogFrames         bool
-	Fullscreen        bool
-	DebugOverlay      bool
-	Title             string
+	ServerAddress      string
+	BindAddress        string
+	InputEnabled       bool
+	InputServerAddress string
+	InputBindAddress   string
+	DisableKeyboard    bool
+	DisableMouse       bool
+	DisableGamepads    bool
+	RequestFPS         int
+	RepairTimeout      time.Duration
+	NoResponseRetries  int
+	Scale              int
+	LogFrames          bool
+	Fullscreen         bool
+	DebugOverlay       bool
+	Title              string
 }
 
 func Parse(args []string) (Config, error) {
 	cfg := Config{
 		ServerAddress:     defaultServerAddress,
 		BindAddress:       defaultBindAddress,
+		InputEnabled:      true,
+		InputBindAddress:  defaultBindAddress,
 		RequestFPS:        defaultRequestFPS,
 		RepairTimeout:     100 * time.Millisecond,
 		NoResponseRetries: 3,
 		Scale:             defaultScale,
-		DebugOverlay:      true,
+		DebugOverlay:      false,
 		Title:             "Clementina Video",
 	}
 
 	flags := flag.NewFlagSet("clementina-video-client", flag.ContinueOnError)
 	flags.StringVar(&cfg.ServerAddress, "server", cfg.ServerAddress, "MIA UDP endpoint")
 	flags.StringVar(&cfg.BindAddress, "bind", cfg.BindAddress, "local UDP bind address")
+	flags.BoolVar(&cfg.InputEnabled, "input", cfg.InputEnabled, "enable Wi-Fi input client")
+	flags.StringVar(&cfg.InputServerAddress, "input-server", cfg.InputServerAddress, "MIA input UDP endpoint")
+	flags.StringVar(&cfg.InputBindAddress, "input-bind", cfg.InputBindAddress, "local input UDP bind address")
+	flags.BoolVar(&cfg.DisableKeyboard, "disable-keyboard", cfg.DisableKeyboard, "do not forward keyboard input")
+	flags.BoolVar(&cfg.DisableMouse, "disable-mouse", cfg.DisableMouse, "do not forward mouse input")
+	flags.BoolVar(&cfg.DisableGamepads, "disable-gamepads", cfg.DisableGamepads, "do not forward gamepad input")
 	flags.IntVar(&cfg.RequestFPS, "fps", cfg.RequestFPS, "frame request cadence")
 	flags.DurationVar(&cfg.RepairTimeout, "repair-timeout", cfg.RepairTimeout, "quiet time before NACK/retry")
 	flags.IntVar(&cfg.NoResponseRetries, "no-response-retries", cfg.NoResponseRetries, "request retries before reconnect")
@@ -72,6 +87,26 @@ func Parse(args []string) (Config, error) {
 	if cfg.BindAddress == "" {
 		return Config{}, fmt.Errorf("bind must not be empty")
 	}
+	if cfg.InputEnabled {
+		if cfg.InputServerAddress == "" {
+			inputAddress, err := defaultInputServerAddress(cfg.ServerAddress)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.InputServerAddress = inputAddress
+		}
+		if cfg.InputBindAddress == "" {
+			return Config{}, fmt.Errorf("input-bind must not be empty")
+		}
+	}
 
 	return cfg, nil
+}
+
+func defaultInputServerAddress(videoAddress string) (string, error) {
+	host, _, err := net.SplitHostPort(videoAddress)
+	if err != nil {
+		return "", fmt.Errorf("server must include host and port: %w", err)
+	}
+	return net.JoinHostPort(host, "6503"), nil
 }
