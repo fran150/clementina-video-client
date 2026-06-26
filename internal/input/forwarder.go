@@ -140,10 +140,14 @@ func (f *Forwarder) updateKeyboard(blocked KeyBlocker) {
 		f.applyKey(key, false)
 	}
 
+	// While Ctrl is held, letters are delivered as control codes via the HID
+	// event (see keyText), so don't also send the literal character here.
 	f.charsBuf = ebiten.AppendInputChars(f.charsBuf[:0])
-	f.textBytesBuf = appendMIABytes(f.textBytesBuf[:0], f.charsBuf)
-	if len(f.textBytesBuf) != 0 {
-		f.client.SendText(f.textBytesBuf)
+	if !ctrlActive() {
+		f.textBytesBuf = appendMIABytes(f.textBytesBuf[:0], f.charsBuf)
+		if len(f.textBytesBuf) != 0 {
+			f.client.SendText(f.textBytesBuf)
+		}
 	}
 }
 
@@ -161,7 +165,31 @@ func (f *Forwarder) applyKey(key ebiten.Key, down bool) {
 	// Enter, Tab, and Backspace are not reported as input characters, so their
 	// text byte is attached to the HID key event instead. MIA enqueues this text
 	// only on key-down.
-	f.client.SendHIDEvent(mia.HIDPageKeyboard, usage, down, false, controlKeyText(key))
+	f.client.SendHIDEvent(mia.HIDPageKeyboard, usage, down, false, keyText(key))
+}
+
+// keyText returns the MIA text byte to attach to a key event. While Ctrl is
+// held (without Alt/Meta), letters A-Z map to control codes $01-$1A so that
+// Ctrl+C ($03) acts as RUN/STOP; otherwise control keys map through
+// controlKeyText. MIA enqueues the byte only on key-down.
+func keyText(key ebiten.Key) uint8 {
+	if key >= ebiten.KeyA && key <= ebiten.KeyZ && ctrlActive() {
+		return uint8(key-ebiten.KeyA) + 1
+	}
+	return controlKeyText(key)
+}
+
+// ctrlActive reports whether a Ctrl modifier is held on its own. Alt or Meta
+// being down disqualifies it, so AltGr (Ctrl+Alt) text entry on international
+// layouts still produces normal characters.
+func ctrlActive() bool {
+	if ebiten.IsKeyPressed(ebiten.KeyAltLeft) || ebiten.IsKeyPressed(ebiten.KeyAltRight) || ebiten.IsKeyPressed(ebiten.KeyAlt) {
+		return false
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyMetaLeft) || ebiten.IsKeyPressed(ebiten.KeyMetaRight) || ebiten.IsKeyPressed(ebiten.KeyMeta) {
+		return false
+	}
+	return ebiten.IsKeyPressed(ebiten.KeyControlLeft) || ebiten.IsKeyPressed(ebiten.KeyControlRight) || ebiten.IsKeyPressed(ebiten.KeyControl)
 }
 
 // controlKeyText returns the MIA text byte for keys that produce text but are
