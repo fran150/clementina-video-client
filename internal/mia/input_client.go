@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -18,12 +19,15 @@ const (
 	InputStateError        = "error"
 )
 
+const defaultInputRetryInterval = time.Second
+
 type InputClientConfig struct {
 	Enabled       bool
 	ServerAddress string
 	BindAddress   string
 	Capabilities  uint16
 	Name          string
+	RetryInterval time.Duration
 }
 
 type InputStats struct {
@@ -38,10 +42,11 @@ type InputStats struct {
 type InputClient struct {
 	cfg InputClientConfig
 
-	conn   *net.UDPConn
-	server *net.UDPAddr
-	stop   chan struct{}
-	done   chan struct{}
+	conn      *net.UDPConn
+	server    *net.UDPAddr
+	stop      chan struct{}
+	done      chan struct{}
+	retryDone chan struct{}
 
 	mu          sync.RWMutex
 	state       string
@@ -50,6 +55,7 @@ type InputClient struct {
 	peerCaps    uint16
 	sentPackets uint64
 	lastError   string
+	stopping    bool
 }
 
 func NewInputClient(cfg InputClientConfig) *InputClient {
@@ -60,12 +66,16 @@ func NewInputClient(cfg InputClientConfig) *InputClient {
 	if cfg.Name == "" {
 		cfg.Name = "clementina-video-client"
 	}
+	if cfg.RetryInterval <= 0 {
+		cfg.RetryInterval = defaultInputRetryInterval
+	}
 
 	return &InputClient{
-		cfg:   cfg,
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
-		state: state,
+		cfg:       cfg,
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
+		retryDone: make(chan struct{}),
+		state:     state,
 	}
 }
 
@@ -92,6 +102,7 @@ func (c *InputClient) Start() error {
 	c.conn = conn
 
 	go c.run()
+	go c.retryLoop()
 	c.RequestConnect()
 
 	return nil
@@ -104,12 +115,17 @@ func (c *InputClient) Close() {
 	default:
 	}
 
+	c.mu.Lock()
+	c.stopping = true
+	c.mu.Unlock()
+
 	c.Disconnect()
 	close(c.stop)
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
 	<-c.done
+	<-c.retryDone
 }
 
 func (c *InputClient) Stats() InputStats {
@@ -134,11 +150,15 @@ func (c *InputClient) Connected() bool {
 }
 
 func (c *InputClient) RequestConnect() {
-	if !c.cfg.Enabled {
+	if !c.cfg.Enabled || c.conn == nil {
 		return
 	}
 
 	c.mu.Lock()
+	if c.stopping {
+		c.mu.Unlock()
+		return
+	}
 	c.sessionID = 0
 	c.peerCaps = 0
 	c.state = InputStateHelloSent
@@ -232,6 +252,29 @@ func (c *InputClient) run() {
 			continue
 		}
 		c.handlePacket(packet)
+	}
+}
+
+// retryLoop keeps asking MIA for a session while there is none. MIA never
+// announces that a session went away: a computer or MIA reset just wipes it and
+// silently drops every packet that still carries the old session id, so the
+// client has to keep offering a HELLO until one is accepted again. It also
+// covers the client starting before MIA is reachable and HELLOs lost in transit.
+func (c *InputClient) retryLoop() {
+	defer close(c.retryDone)
+
+	ticker := time.NewTicker(c.cfg.RetryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-ticker.C:
+			if !c.Connected() {
+				c.RequestConnect()
+			}
+		}
 	}
 }
 

@@ -20,6 +20,7 @@ type Config struct {
 	InputEnabled       bool
 	InputServerAddress string
 	InputBindAddress   string
+	InputRetryInterval time.Duration
 	DisableKeyboard    bool
 	DisableMouse       bool
 	DisableGamepads    bool
@@ -35,16 +36,17 @@ type Config struct {
 
 func Parse(args []string) (Config, error) {
 	cfg := Config{
-		ServerAddress:     defaultServerAddress,
-		BindAddress:       defaultBindAddress,
-		InputEnabled:      true,
-		InputBindAddress:  defaultBindAddress,
-		RequestFPS:        defaultRequestFPS,
-		RepairTimeout:     100 * time.Millisecond,
-		NoResponseRetries: 3,
-		Scale:             defaultScale,
-		DebugOverlay:      false,
-		Title:             "Clementina Video",
+		ServerAddress:      defaultServerAddress,
+		BindAddress:        defaultBindAddress,
+		InputEnabled:       true,
+		InputBindAddress:   defaultBindAddress,
+		InputRetryInterval: time.Second,
+		RequestFPS:         defaultRequestFPS,
+		RepairTimeout:      100 * time.Millisecond,
+		NoResponseRetries:  3,
+		Scale:              defaultScale,
+		DebugOverlay:       false,
+		Title:              "Clementina Video",
 	}
 
 	flags := flag.NewFlagSet("clementina-video-client", flag.ContinueOnError)
@@ -53,6 +55,7 @@ func Parse(args []string) (Config, error) {
 	flags.BoolVar(&cfg.InputEnabled, "input", cfg.InputEnabled, "enable Wi-Fi input client")
 	flags.StringVar(&cfg.InputServerAddress, "input-server", cfg.InputServerAddress, "MIA input UDP endpoint")
 	flags.StringVar(&cfg.InputBindAddress, "input-bind", cfg.InputBindAddress, "local input UDP bind address")
+	flags.DurationVar(&cfg.InputRetryInterval, "input-retry-interval", cfg.InputRetryInterval, "how often to re-announce the input client while it has no session")
 	flags.BoolVar(&cfg.DisableKeyboard, "disable-keyboard", cfg.DisableKeyboard, "do not forward keyboard input")
 	flags.BoolVar(&cfg.DisableMouse, "disable-mouse", cfg.DisableMouse, "do not forward mouse input")
 	flags.BoolVar(&cfg.DisableGamepads, "disable-gamepads", cfg.DisableGamepads, "do not forward gamepad input")
@@ -97,6 +100,9 @@ func Parse(args []string) (Config, error) {
 		}
 		if cfg.InputBindAddress == "" {
 			return Config{}, fmt.Errorf("input-bind must not be empty")
+		}
+		if cfg.InputRetryInterval <= 0 {
+			return Config{}, fmt.Errorf("input-retry-interval must be positive")
 		}
 	}
 

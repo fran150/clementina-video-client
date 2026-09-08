@@ -30,6 +30,7 @@ Defaults:
 | `--input` | `true` | enable MIA Wi-Fi input |
 | `--input-server` | server host, port `6503` | MIA input UDP endpoint |
 | `--input-bind` | `:0` | local input UDP bind address |
+| `--input-retry-interval` | `1s` | input HELLO cadence while unconnected |
 | `--disable-keyboard` | `false` | do not forward keyboard input |
 | `--disable-mouse` | `false` | do not forward mouse input |
 | `--disable-gamepads` | `false` | do not forward gamepad input |
@@ -48,8 +49,21 @@ Keys:
 - `F5`: capture/release mouse in control mode
 - `F6`: clear MIA input state in control mode
 - `F11`: toggle fullscreen in control mode
-- `F12`: attempt input reconnect in control mode
+- `F12`: force an immediate input reconnect in control mode
 - `Escape`: quit in control mode
+
+## Input reconnection
+
+MIA sends nothing when the computer or MIA itself resets: both the video and the
+input session are wiped, and packets carrying the old session id are silently
+dropped. The client recovers on its own, so `F12` is only needed to skip the
+wait:
+
+- while the input client has no session it re-sends `HELLO` every
+  `--input-retry-interval`, which also covers starting before MIA is reachable;
+- every fresh video session triggers an input `HELLO`, since a reset drops both
+  sessions together and the video client already re-announces itself after
+  `--no-response-retries` unanswered requests.
 
 Normal mode forwards keyboard and gamepad input to MIA. Mouse input is forwarded
 only while the mouse is captured. Control mode shows input/video status and

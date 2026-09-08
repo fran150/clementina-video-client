@@ -290,31 +290,35 @@ func main() {
 		os.Exit(2)
 	}
 
-	client := mia.NewClient(mia.ClientConfig{
-		ServerAddress:     cfg.ServerAddress,
-		BindAddress:       cfg.BindAddress,
-		RequestFPS:        cfg.RequestFPS,
-		RepairTimeout:     cfg.RepairTimeout,
-		NoResponseRetries: cfg.NoResponseRetries,
-		LogFrames:         cfg.LogFrames,
-	})
-	if err := client.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "video client error: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
+	// The input client is started first so its socket is in place before the
+	// video client's goroutine can call back into it on the first welcome.
 	inputClient := mia.NewInputClient(mia.InputClientConfig{
 		Enabled:       cfg.InputEnabled && (!cfg.DisableKeyboard || !cfg.DisableMouse || !cfg.DisableGamepads),
 		ServerAddress: cfg.InputServerAddress,
 		BindAddress:   cfg.InputBindAddress,
 		Capabilities:  inputCapabilities(cfg),
+		RetryInterval: cfg.InputRetryInterval,
 	})
 	if err := inputClient.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "input client error: %v\n", err)
 		os.Exit(1)
 	}
 	defer inputClient.Close()
+
+	client := mia.NewClient(mia.ClientConfig{
+		ServerAddress:        cfg.ServerAddress,
+		BindAddress:          cfg.BindAddress,
+		RequestFPS:           cfg.RequestFPS,
+		RepairTimeout:        cfg.RepairTimeout,
+		NoResponseRetries:    cfg.NoResponseRetries,
+		LogFrames:            cfg.LogFrames,
+		OnSessionEstablished: inputClient.RequestConnect,
+	})
+	if err := client.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "video client error: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
 
 	ebiten.SetWindowTitle(cfg.Title)
 	ebiten.SetWindowSize(mia.DisplayWidth*cfg.Scale, mia.DisplayHeight*cfg.Scale)

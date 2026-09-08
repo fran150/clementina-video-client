@@ -18,6 +18,12 @@ type ClientConfig struct {
 	RepairTimeout     time.Duration
 	NoResponseRetries int
 	LogFrames         bool
+
+	// OnSessionEstablished runs on the client goroutine every time MIA answers a
+	// HELLO with a new video session. A MIA reset drops the video and the input
+	// session together, so this doubles as the reset signal the input client
+	// needs to re-announce itself.
+	OnSessionEstablished func()
 }
 
 type Stats struct {
@@ -284,6 +290,10 @@ func (c *Client) handleWelcome(packet Packet) {
 		stats.LastFrameID = 0
 		stats.LastStatus = "welcome"
 	})
+
+	if c.cfg.OnSessionEstablished != nil {
+		c.cfg.OnSessionEstablished()
+	}
 }
 
 func (c *Client) handleFrameData(packet Packet) {
