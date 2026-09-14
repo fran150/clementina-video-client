@@ -2,16 +2,28 @@ package input
 
 import (
 	"math"
+	"time"
 
 	"github.com/fran150/clementina-video-client/internal/mia"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
 
+// defaultPasteRate is how many text bytes per second a queued paste drains
+// at. MIA's text FIFO is only 64 bytes and drops the oldest byte on overflow
+// (see docs/input-protocol.md), and the protocol has no flow control, so a
+// large paste is trickled in at a plausible typing pace instead of being
+// handed to SendText in one burst.
+const defaultPasteRate = 40.0
+
 type Config struct {
 	Keyboard bool
 	Mouse    bool
 	Gamepads bool
+
+	// PasteRate is the paste drain rate in bytes per second. Zero uses
+	// defaultPasteRate.
+	PasteRate float64
 }
 
 type KeyBlocker func(ebiten.Key) bool
@@ -39,13 +51,23 @@ type Forwarder struct {
 	gamepadSlots    map[ebiten.GamepadID]uint8
 	gamepadSlotUsed [4]bool
 	gamepadState    [4][10]byte
+
+	pasteQueue    []byte
+	pasteRate     float64
+	pasteAccum    float64
+	lastPasteTick time.Time
 }
 
 func NewForwarder(client *mia.InputClient, cfg Config) *Forwarder {
+	rate := cfg.PasteRate
+	if rate <= 0 {
+		rate = defaultPasteRate
+	}
 	return &Forwarder{
 		client:       client,
 		cfg:          cfg,
 		gamepadSlots: map[ebiten.GamepadID]uint8{},
+		pasteRate:    rate,
 	}
 }
 
@@ -62,6 +84,7 @@ func (f *Forwarder) Update(blocked KeyBlocker, mouseCaptured bool) {
 
 	if f.cfg.Keyboard {
 		f.updateKeyboard(blocked)
+		f.drainPaste()
 	}
 	if f.cfg.Mouse {
 		f.updateMouse(mouseCaptured)
@@ -69,6 +92,57 @@ func (f *Forwarder) Update(blocked KeyBlocker, mouseCaptured bool) {
 	if f.cfg.Gamepads {
 		f.updateGamepads()
 	}
+}
+
+// QueuePaste appends text to be sent to MIA a few bytes at a time, as if it
+// were typed. It filters to the same printable range as typed input and maps
+// line endings to carriage return so pasted text behaves like pressing Enter.
+// A no-op when keyboard forwarding is disabled.
+func (f *Forwarder) QueuePaste(text string) {
+	if f.client == nil || !f.cfg.Keyboard || text == "" {
+		return
+	}
+	f.pasteQueue = appendPasteBytes(f.pasteQueue, text)
+}
+
+// drainPaste trickles queued paste bytes out at pasteRate bytes per second
+// instead of handing them all to SendText at once. MIA's text FIFO is only 64
+// bytes with no flow control back to the client (see docs/input-protocol.md),
+// so a large paste sent in a burst can silently lose its oldest bytes; pacing
+// it keeps the FIFO from ever holding much more than a real typist would
+// produce.
+func (f *Forwarder) drainPaste() {
+	if len(f.pasteQueue) == 0 {
+		f.pasteAccum = 0
+		f.lastPasteTick = time.Time{}
+		return
+	}
+	if !f.client.Connected() {
+		// Hold the queue and reset the clock so reconnecting doesn't dump an
+		// elapsed-time backlog in one shot.
+		f.lastPasteTick = time.Time{}
+		return
+	}
+
+	now := time.Now()
+	if f.lastPasteTick.IsZero() {
+		f.lastPasteTick = now
+	}
+	f.pasteAccum += now.Sub(f.lastPasteTick).Seconds() * f.pasteRate
+	f.lastPasteTick = now
+
+	n := int(f.pasteAccum)
+	if n <= 0 {
+		return
+	}
+	if n > len(f.pasteQueue) {
+		n = len(f.pasteQueue)
+	}
+	f.pasteAccum -= float64(n)
+
+	chunk := f.pasteQueue[:n]
+	f.pasteQueue = f.pasteQueue[n:]
+	f.client.SendText(chunk)
 }
 
 func (f *Forwarder) Sync() {
@@ -109,6 +183,9 @@ func (f *Forwarder) ClearMouse() {
 func (f *Forwarder) ClearAll() {
 	clear(f.keyboard[:])
 	clear(f.consumer[:])
+	f.pasteQueue = nil
+	f.pasteAccum = 0
+	f.lastPasteTick = time.Time{}
 	f.mouseReady = false
 	f.mouseButtons = 0
 	f.wheelRemainder = 0
@@ -340,6 +417,33 @@ func appendMIABytes(dst []byte, chars []rune) []byte {
 	for _, r := range chars {
 		if r >= 0x20 && r <= 0x7E {
 			dst = append(dst, byte(r))
+		}
+	}
+	return dst
+}
+
+// appendPasteBytes filters pasted text to the same printable range as typed
+// input (see appendMIABytes), plus tab and line endings mapped to the same
+// text bytes their key would send (see controlKeyText). "\r\n" is treated as
+// one line break, not two.
+func appendPasteBytes(dst []byte, text string) []byte {
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch r {
+		case '\t':
+			dst = append(dst, 0x09)
+		case '\n':
+			dst = append(dst, 0x0D)
+		case '\r':
+			dst = append(dst, 0x0D)
+			if i+1 < len(runes) && runes[i+1] == '\n' {
+				i++
+			}
+		default:
+			if r >= 0x20 && r <= 0x7E {
+				dst = append(dst, byte(r))
+			}
 		}
 	}
 	return dst

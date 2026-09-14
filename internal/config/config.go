@@ -12,6 +12,7 @@ const (
 	defaultBindAddress   = ":0"
 	defaultRequestFPS    = 25
 	defaultScale         = 4
+	defaultPasteRate     = 40
 )
 
 type Config struct {
@@ -24,6 +25,7 @@ type Config struct {
 	DisableKeyboard    bool
 	DisableMouse       bool
 	DisableGamepads    bool
+	PasteRate          int
 	RequestFPS         int
 	RepairTimeout      time.Duration
 	NoResponseRetries  int
@@ -45,6 +47,7 @@ func Parse(args []string) (Config, error) {
 		RepairTimeout:      100 * time.Millisecond,
 		NoResponseRetries:  3,
 		Scale:              defaultScale,
+		PasteRate:          defaultPasteRate,
 		DebugOverlay:       false,
 		Title:              "Clementina Video",
 	}
@@ -59,6 +62,7 @@ func Parse(args []string) (Config, error) {
 	flags.BoolVar(&cfg.DisableKeyboard, "disable-keyboard", cfg.DisableKeyboard, "do not forward keyboard input")
 	flags.BoolVar(&cfg.DisableMouse, "disable-mouse", cfg.DisableMouse, "do not forward mouse input")
 	flags.BoolVar(&cfg.DisableGamepads, "disable-gamepads", cfg.DisableGamepads, "do not forward gamepad input")
+	flags.IntVar(&cfg.PasteRate, "paste-rate", cfg.PasteRate, "clipboard paste rate in characters per second (Ctrl+V / Cmd+V)")
 	flags.IntVar(&cfg.RequestFPS, "fps", cfg.RequestFPS, "frame request cadence")
 	flags.DurationVar(&cfg.RepairTimeout, "repair-timeout", cfg.RepairTimeout, "quiet time before NACK/retry")
 	flags.IntVar(&cfg.NoResponseRetries, "no-response-retries", cfg.NoResponseRetries, "request retries before reconnect")
@@ -83,6 +87,9 @@ func Parse(args []string) (Config, error) {
 	}
 	if cfg.Scale < 1 {
 		return Config{}, fmt.Errorf("scale must be at least 1")
+	}
+	if cfg.PasteRate < 1 {
+		return Config{}, fmt.Errorf("paste-rate must be at least 1")
 	}
 	if cfg.ServerAddress == "" {
 		return Config{}, fmt.Errorf("server must not be empty")

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 	"math"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/fran150/clementina-video-client/internal/config"
 	clientinput "github.com/fran150/clementina-video-client/internal/input"
 	"github.com/fran150/clementina-video-client/internal/mia"
@@ -66,7 +68,7 @@ func NewGame(client *mia.Client, inputClient *mia.InputClient, cfg config.Config
 	return &Game{
 		client:             client,
 		inputClient:        inputClient,
-		inputForwarder:     clientinput.NewForwarder(inputClient, clientinput.Config{Keyboard: keyboardEnabled, Mouse: mouseEnabled, Gamepads: gamepadsEnabled}),
+		inputForwarder:     clientinput.NewForwarder(inputClient, clientinput.Config{Keyboard: keyboardEnabled, Mouse: mouseEnabled, Gamepads: gamepadsEnabled, PasteRate: float64(cfg.PasteRate)}),
 		renderer:           render.NewRenderer(),
 		frame:              image.NewRGBA(image.Rect(0, 0, mia.DisplayWidth, mia.DisplayHeight)),
 		texture:            ebiten.NewImage(mia.DisplayWidth, mia.DisplayHeight),
@@ -104,6 +106,10 @@ func (g *Game) Update() error {
 	if g.suppressModeChord {
 		g.toggleMode()
 		g.inputForwarder.ClearKeyboard()
+	}
+
+	if pasteChordJustPressed() {
+		g.pasteClipboard()
 	}
 
 	if g.mode == modeControl {
@@ -186,7 +192,7 @@ func (g *Game) drawOverlay(screen *ebiten.Image) {
 		fmt.Sprintf("repair timeout: %s   status: %s", g.repairTimeout, stats.LastStatus),
 		fmt.Sprintf("input: %s   server: %s   session: %s   sent: %d", inputStats.State, g.inputServerAddress, inputSession, inputStats.SentPackets),
 		fmt.Sprintf("mode: %s   mouse: %s   keyboard:%s mouse:%s gamepads:%s", g.modeName(), boolStatus(g.mouseCaptured), boolStatus(g.keyboardEnabled), boolStatus(g.mouseEnabled), boolStatus(g.gamepadsEnabled)),
-		"Ctrl+M mode   F1 normal   F3 overlay   F5 mouse   F6 clear   F11 fullscreen   F12 reconnect   Esc quit",
+		"Ctrl+M mode   F1 normal   F3 overlay   F5 mouse   F6 clear   F11 fullscreen   F12 reconnect   Esc quit   Ctrl+V paste",
 	}
 	if inputStats.LastError != "" {
 		lines = append(lines, "input error: "+inputStats.LastError)
@@ -217,6 +223,11 @@ func (g *Game) modeChordJustPressed() bool {
 
 func (g *Game) keyBlocked(key ebiten.Key) bool {
 	if g.suppressModeChord && key == ebiten.KeyM {
+		return true
+	}
+	// Ctrl+V / Cmd+V is reserved for local paste (see pasteChordJustPressed)
+	// and never reaches the guest as a literal keystroke.
+	if key == ebiten.KeyV && pasteModifierActive() {
 		return true
 	}
 	if g.mode != modeControl {
@@ -274,6 +285,35 @@ func controlPressed() bool {
 	return ebiten.IsKeyPressed(ebiten.KeyControlLeft) ||
 		ebiten.IsKeyPressed(ebiten.KeyControlRight) ||
 		ebiten.IsKeyPressed(ebiten.KeyControl)
+}
+
+// pasteModifierActive reports whether the paste chord's modifier (Ctrl, for
+// most platforms, or Cmd/Meta on macOS) is held, ignoring Alt so AltGr combos
+// are unaffected.
+func pasteModifierActive() bool {
+	if ebiten.IsKeyPressed(ebiten.KeyAltLeft) || ebiten.IsKeyPressed(ebiten.KeyAltRight) || ebiten.IsKeyPressed(ebiten.KeyAlt) {
+		return false
+	}
+	return controlPressed() ||
+		ebiten.IsKeyPressed(ebiten.KeyMetaLeft) ||
+		ebiten.IsKeyPressed(ebiten.KeyMetaRight) ||
+		ebiten.IsKeyPressed(ebiten.KeyMeta)
+}
+
+// pasteChordJustPressed reports whether Ctrl+V / Cmd+V was just pressed.
+func pasteChordJustPressed() bool {
+	return inpututil.IsKeyJustPressed(ebiten.KeyV) && pasteModifierActive()
+}
+
+// pasteClipboard reads the system clipboard and queues its text to be sent to
+// MIA a few bytes at a time (see Forwarder.QueuePaste), as if it were typed.
+func (g *Game) pasteClipboard() {
+	text, err := clipboard.ReadAll()
+	if err != nil {
+		log.Printf("clipboard paste: %v", err)
+		return
+	}
+	g.inputForwarder.QueuePaste(text)
 }
 
 func boolStatus(value bool) string {

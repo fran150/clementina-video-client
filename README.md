@@ -40,10 +40,13 @@ Defaults:
 | `--scale` | `4` | initial window scale |
 | `--fullscreen` | `false` | start fullscreen |
 | `--debug-overlay` | `false` | show connection/FPS/protocol HUD |
+| `--paste-rate` | `40` | clipboard paste rate, in characters per second |
 
 Keys:
 
 - `Ctrl+M`: toggle normal/control mode
+- `Ctrl+V` / `Cmd+V`: paste the system clipboard, sent to MIA as `TEXT` a few
+  characters at a time (see [Clipboard paste](#clipboard-paste))
 - `F1`: return to normal mode from control mode
 - `F3`: toggle debug overlay in control mode
 - `F5`: capture/release mouse in control mode
@@ -51,6 +54,24 @@ Keys:
 - `F11`: toggle fullscreen in control mode
 - `F12`: force an immediate input reconnect in control mode
 - `Escape`: quit in control mode
+
+## Clipboard paste
+
+`Ctrl+V` (`Cmd+V` on macOS) reads the system clipboard and queues it to be
+sent to MIA as `TEXT` packets, as if it were typed. It never reaches the guest
+as a literal keystroke: that chord is reserved for paste.
+
+The queue drains at `--paste-rate` characters per second (default `40`)
+instead of being sent in one burst. MIA's text FIFO is only 64 bytes and has
+no flow control back to the client (see the `TEXT` packet in MIA's Wi-Fi input
+protocol docs), so a large paste sent all at once can silently lose its oldest
+bytes if the guest program isn't reading fast enough; pacing it keeps the FIFO
+close to what a real typist would produce. Losing window focus (or `F6`) drops
+any paste still in flight instead of resuming it later.
+
+Only printable ASCII is sent; other characters are dropped. Tab, `\n`, and
+`\r`/`\r\n` are mapped to the same text byte their key would send (so a pasted
+line break behaves like pressing Enter).
 
 ## Input reconnection
 
