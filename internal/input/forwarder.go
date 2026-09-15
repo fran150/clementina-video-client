@@ -246,12 +246,20 @@ func (f *Forwarder) applyKey(key ebiten.Key, down bool) {
 }
 
 // keyText returns the MIA text byte to attach to a key event. While Ctrl is
-// held (without Alt/Meta), letters A-Z map to control codes $01-$1A so that
-// Ctrl+C ($03) acts as RUN/STOP; otherwise control keys map through
+// held (without Alt/Meta): Ctrl+I sends $94 (Insert), standing in for the
+// physical Insert key Mac keyboards don't have; other letters A-Z map to
+// control codes $01-$1A so that Ctrl+C ($03) acts as RUN/STOP (this shadows
+// the classic Ctrl+I==Tab convention, but a real Tab key already sends $09,
+// so the letter is free to repurpose). Otherwise control keys map through
 // controlKeyText. MIA enqueues the byte only on key-down.
 func keyText(key ebiten.Key) uint8 {
-	if key >= ebiten.KeyA && key <= ebiten.KeyZ && ctrlActive() {
-		return uint8(key-ebiten.KeyA) + 1
+	if ctrlActive() {
+		if key == ebiten.KeyI {
+			return 0x94
+		}
+		if key >= ebiten.KeyA && key <= ebiten.KeyZ {
+			return uint8(key-ebiten.KeyA) + 1
+		}
 	}
 	return controlKeyText(key)
 }

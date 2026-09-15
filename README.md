@@ -45,6 +45,8 @@ Defaults:
 Keys:
 
 - `Ctrl+M`: toggle normal/control mode
+- `Ctrl+I`: sent to the guest as Insert (`$94`) — a stand-in for the physical
+  Insert key Mac keyboards don't have
 - `Ctrl+V` / `Cmd+V`: paste the system clipboard, sent to MIA as `TEXT` a few
   characters at a time (see [Clipboard paste](#clipboard-paste))
 - `F1`: return to normal mode from control mode
