@@ -57,6 +57,10 @@ Keys:
 - `F12`: force an immediate input reconnect in control mode
 - `Escape`: quit in control mode
 
+Every other key goes to the guest. The byte each one types, and which keys MIA
+decodes itself, are in the key code table in MIA's
+[docs/input.md](https://github.com/fran150/clementina-mia/blob/main/docs/input.md#key-codes).
+
 ## Clipboard paste
 
 `Ctrl+V` (`Cmd+V` on macOS) reads the system clipboard and queues it to be
