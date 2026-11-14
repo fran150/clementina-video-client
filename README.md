@@ -6,6 +6,28 @@ The client keeps a local mirror of MIA video RAM, requests dirty-page updates
 over UDP, repairs missing chunks with `NACK_CHUNKS`, acknowledges completed
 responses, and renders the mirrored tile/sprite state to a 320x200 display.
 
+## Install
+
+The [releases](https://github.com/fran150/clementina-video-client/releases)
+attach one archive per platform (`linux-amd64`, `linux-arm64`, `darwin-arm64`,
+`darwin-amd64`, `windows-amd64`) and a `SHA256SUMS` file. Each archive holds
+`clementina-video-client` and `clementina-render`, which turns a snapshot of
+MIA's video state into a PNG on stdout: `clementina-render debug.video.bin >
+frame.png` reads the raw bytes from a file, and with no file it reads a JSON
+array of them on stdin. On Linux the client needs
+the X11 and OpenGL runtime libraries, which desktop distributions already
+have. macOS may quarantine a downloaded executable;
+`xattr -d com.apple.quarantine` clears that.
+
+### Dev install
+
+`make dev-install` builds `clementina-video-client` and `clementina-render` into
+`~/.clementina/dev/bin` (or `$CLEMENTINA_DEV_BIN`), the folder the Clementina
+SDK's `clementina-dev on` puts ahead of the installed tools on `PATH`; see the
+SDK's [dev installs](https://github.com/fran150/clementina-sdk/blob/main/docs/dev-install.md).
+`--version` prints `dev` and the commit for such a build, and the release tag
+for a downloaded one.
+
 ## Run
 
 ```bash

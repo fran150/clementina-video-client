@@ -1,0 +1,112 @@
+name: Release
+
+# Builds the video client on each platform's own runner: Ebitengine needs cgo
+# and the X11 and OpenGL headers on Linux, so Linux builds cannot be
+# cross-compiled. Every push and pull request builds and smoke-tests the
+# packages; a v* tag also attaches them to that GitHub release. A tag with a
+# prerelease suffix (v0.1.0-alpha.1) makes a prerelease.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, target: linux-amd64}
+          - {os: ubuntu-24.04-arm, target: linux-arm64}
+          - {os: macos-latest, target: darwin-arm64}
+          - {os: macos-15-intel, target: darwin-amd64}
+          - {os: windows-latest, target: windows-amd64}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Ebitengine build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc6-dev libgl1-mesa-dev libxcursor-dev libxi-dev \
+            libxinerama-dev libxrandr-dev libxxf86vm-dev libasound2-dev pkg-config xvfb
+      - name: Build
+        run: |
+          case "$GITHUB_REF" in refs/tags/v*) version="$GITHUB_REF_NAME" ;; *) version="dev-${GITHUB_SHA::7}" ;; esac
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+          name="clementina-video-client-$version-${{ matrix.target }}"
+          dir="dist/$name"
+          mkdir -p "$dir"
+          ldflags="-X github.com/fran150/clementina-video-client/internal/buildinfo.Version=$version"
+          go build -trimpath -ldflags "$ldflags" -o "$dir/clementina-video-client$ext" ./cmd/clementina-video-client
+          go build -trimpath -ldflags "$ldflags" -o "$dir/clementina-render$ext" ./cmd/clementina-render
+          cp README.md LICENSE "$dir/"
+          echo "PACKAGE_DIR=$dir" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$name" >> "$GITHUB_ENV"
+          echo "EXT=$ext" >> "$GITHUB_ENV"
+      # The client needs a display even to print its flags, so Linux runs it
+      # under Xvfb. The renderer turns an all-zero snapshot into a PNG.
+      - name: Smoke test
+        run: |
+          run=(); [ "$RUNNER_OS" = Linux ] && run=(xvfb-run -a)
+          "${run[@]}" "$PACKAGE_DIR/clementina-video-client$EXT" -h > usage.txt 2>&1 || true
+          cat usage.txt
+          grep -q 'Usage of' usage.txt
+          "$PACKAGE_DIR/clementina-render$EXT" --version
+          py="$(command -v python3 || command -v python)"
+          "$py" -c "print('[' + ','.join(['0'] * 68944) + ']')" > snapshot.json
+          "$PACKAGE_DIR/clementina-render$EXT" < snapshot.json > snapshot.png
+          "$py" -c "import sys; sys.exit(open('snapshot.png', 'rb').read(8) != b'\x89PNG\r\n\x1a\n')"
+          "$py" -c "open('snapshot.bin', 'wb').write(bytes(68944))"
+          "$PACKAGE_DIR/clementina-render$EXT" snapshot.bin > from-file.png
+          "$py" -c "import sys; sys.exit(open('from-file.png', 'rb').read() != open('snapshot.png', 'rb').read())"
+      - name: Archive
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$PACKAGE_NAME.zip" "$PACKAGE_NAME" >/dev/null
+          else
+            tar -czf "$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Attach packages to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"
+          gh release upload "$GITHUB_REF_NAME" ./* --repo "$GITHUB_REPOSITORY" --clobber

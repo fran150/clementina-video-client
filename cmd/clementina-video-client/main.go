@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/fran150/clementina-video-client/internal/buildinfo"
 	"github.com/fran150/clementina-video-client/internal/config"
 	clientinput "github.com/fran150/clementina-video-client/internal/input"
 	"github.com/fran150/clementina-video-client/internal/mia"
@@ -324,6 +325,10 @@ func boolStatus(value bool) string {
 }
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Println(buildinfo.String("clementina-video-client"))
+		return
+	}
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
