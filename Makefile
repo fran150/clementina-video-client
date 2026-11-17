@@ -9,8 +9,8 @@ build:
 	mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_OUTPUT) $(CMD)
 
-# Dev builds go into the folder the Clementina SDK's `clementina-dev on` puts
-# first on PATH; see docs/dev-install.md in clementina-sdk.
+# Dev builds go into the folder that the Clementina SDK's `clementina dev on`
+# switches every terminal to; see docs/dev-install.md in clementina-sdk.
 DEV_BIN ?= $(if $(CLEMENTINA_DEV_BIN),$(CLEMENTINA_DEV_BIN),$(HOME)/.clementina/dev/bin)
 
 dev-install:

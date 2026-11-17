@@ -190,7 +190,8 @@ func (g *Game) drawOverlay(screen *ebiten.Image) {
 		fmt.Sprintf("render fps: %.1f   request fps: %d   apply fps: %.1f", ebiten.ActualFPS(), g.requestFPS, g.protocolFPS),
 		fmt.Sprintf("session: %08X   frame: %d   request: %d", stats.SessionID, stats.LastFrameID, stats.RequestID),
 		fmt.Sprintf("dirty pages: %d   repairs: %d   no-dirty: %d   reconnects: %d", stats.LastDirtyPages, stats.RepairsSent, stats.NoDirtyResponses, stats.Reconnects),
-		fmt.Sprintf("repair timeout: %s   status: %s", g.repairTimeout, stats.LastStatus),
+		fmt.Sprintf("repair timeout: %s (max %s, rtt %s)   status: %s", stats.RepairTimeout.Round(time.Millisecond), g.repairTimeout, stats.SmoothedRTT.Round(100*time.Microsecond), stats.LastStatus),
+		playoutStatus(stats),
 		fmt.Sprintf("input: %s   server: %s   session: %s   sent: %d", inputStats.State, g.inputServerAddress, inputSession, inputStats.SentPackets),
 		fmt.Sprintf("mode: %s   mouse: %s   keyboard:%s mouse:%s gamepads:%s", g.modeName(), boolStatus(g.mouseCaptured), boolStatus(g.keyboardEnabled), boolStatus(g.mouseEnabled), boolStatus(g.gamepadsEnabled)),
 		"Ctrl+M mode   F1 normal   F3 overlay   F5 mouse   F6 clear   F11 fullscreen   F12 reconnect   Esc quit   Ctrl+V paste",
@@ -203,6 +204,14 @@ func (g *Game) drawOverlay(screen *ebiten.Image) {
 	height := float64(len(lines)*16 + 12)
 	ebitenutil.DrawRect(screen, 8, 8, width, height, color.RGBA{0, 0, 0, 190})
 	ebitenutil.DebugPrintAt(screen, strings.Join(lines, "\n"), 14, 14)
+}
+
+func playoutStatus(stats mia.Stats) string {
+	if stats.PlayoutDelay <= 0 {
+		return "playout buffer: off (--playout-delay)"
+	}
+	return fmt.Sprintf("playout buffer: %s   waiting: %d   shown: %d   late: %d",
+		stats.PlayoutDelay, stats.PlayoutQueued, stats.PlayoutShown, stats.PlayoutLate)
 }
 
 func (g *Game) updateProtocolFPS(stats mia.Stats) {
@@ -357,6 +366,7 @@ func main() {
 		RepairTimeout:        cfg.RepairTimeout,
 		NoResponseRetries:    cfg.NoResponseRetries,
 		LogFrames:            cfg.LogFrames,
+		PlayoutDelay:         cfg.PlayoutDelay,
 		OnSessionEstablished: inputClient.RequestConnect,
 	})
 	if err := client.Start(); err != nil {
