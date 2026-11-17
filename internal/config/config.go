@@ -29,6 +29,7 @@ type Config struct {
 	RequestFPS         int
 	RepairTimeout      time.Duration
 	NoResponseRetries  int
+	PlayoutDelay       time.Duration
 	Scale              int
 	LogFrames          bool
 	Fullscreen         bool
@@ -45,7 +46,7 @@ func Parse(args []string) (Config, error) {
 		InputRetryInterval: time.Second,
 		RequestFPS:         defaultRequestFPS,
 		RepairTimeout:      100 * time.Millisecond,
-		NoResponseRetries:  3,
+		NoResponseRetries:  10,
 		Scale:              defaultScale,
 		PasteRate:          defaultPasteRate,
 		DebugOverlay:       false,
@@ -66,6 +67,7 @@ func Parse(args []string) (Config, error) {
 	flags.IntVar(&cfg.RequestFPS, "fps", cfg.RequestFPS, "frame request cadence")
 	flags.DurationVar(&cfg.RepairTimeout, "repair-timeout", cfg.RepairTimeout, "quiet time before NACK/retry")
 	flags.IntVar(&cfg.NoResponseRetries, "no-response-retries", cfg.NoResponseRetries, "request retries before reconnect")
+	flags.DurationVar(&cfg.PlayoutDelay, "playout-delay", cfg.PlayoutDelay, "hold each frame this long after its request before showing it, to even out Wi-Fi jitter (0 = off)")
 	flags.IntVar(&cfg.Scale, "scale", cfg.Scale, "initial integer window scale")
 	flags.BoolVar(&cfg.LogFrames, "log-frames", cfg.LogFrames, "log applied frame updates to frame_updates.log")
 	flags.BoolVar(&cfg.Fullscreen, "fullscreen", cfg.Fullscreen, "start in fullscreen")
@@ -81,6 +83,9 @@ func Parse(args []string) (Config, error) {
 	}
 	if cfg.RepairTimeout <= 0 {
 		return Config{}, fmt.Errorf("repair-timeout must be positive")
+	}
+	if cfg.PlayoutDelay < 0 || cfg.PlayoutDelay > time.Second {
+		return Config{}, fmt.Errorf("playout-delay must be between 0 and 1s")
 	}
 	if cfg.NoResponseRetries < 1 {
 		return Config{}, fmt.Errorf("no-response-retries must be at least 1")

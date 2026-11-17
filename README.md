@@ -22,9 +22,8 @@ have. macOS may quarantine a downloaded executable;
 ### Dev install
 
 `make dev-install` builds `clementina-video-client` and `clementina-render` into
-`~/.clementina/dev/bin` (or `$CLEMENTINA_DEV_BIN`), the folder the Clementina
-SDK's `clementina-dev on` puts ahead of the installed tools on `PATH`; see the
-SDK's [dev installs](https://github.com/fran150/clementina-sdk/blob/main/docs/dev-install.md).
+`~/.clementina/dev/bin` (or `$CLEMENTINA_DEV_BIN`), the folder that the
+Clementina SDK's `clementina dev on` switches every terminal to; see the SDK's [dev installs](https://github.com/fran150/clementina-sdk/blob/main/docs/dev-install.md).
 `--version` prints `dev` and the commit for such a build, and the release tag
 for a downloaded one.
 
@@ -57,8 +56,9 @@ Defaults:
 | `--disable-mouse` | `false` | do not forward mouse input |
 | `--disable-gamepads` | `false` | do not forward gamepad input |
 | `--fps` | `25` | request cadence |
-| `--repair-timeout` | `100ms` | quiet time before retry/NACK |
-| `--no-response-retries` | `3` | retries before a new HELLO |
+| `--repair-timeout` | `100ms` | longest quiet time before retry/NACK (see below) |
+| `--playout-delay` | `0` (off) | hold each frame this long before showing it (see below) |
+| `--no-response-retries` | `10` | a new HELLO after this many `--repair-timeout`s with no reply |
 | `--scale` | `4` | initial window scale |
 | `--fullscreen` | `false` | start fullscreen |
 | `--debug-overlay` | `false` | show connection/FPS/protocol HUD |
@@ -100,6 +100,34 @@ any paste still in flight instead of resuming it later.
 Only printable ASCII is sent; other characters are dropped. Tab, `\n`, and
 `\r`/`\r\n` are mapped to the same text byte their key would send (so a pasted
 line break behaves like pressing Enter).
+
+## Repair timeout
+
+The client measures the round trip of each request, from sending it to MIA's
+first reply, and sets the quiet time before it re-sends a request or NACKs
+missing chunks the way TCP sets its retransmission timeout: the smoothed round
+trip plus four times its variation, at least 40 ms (one frame at 25 fps) and at most
+`--repair-timeout`. On a quick, steady link a lost packet is repaired after
+40 ms; on a jittery one the timeout grows, so packets that are
+only late are not asked for again. Unanswered request retries double the wait
+each time, up to `--repair-timeout`. The client reconnects with a new `HELLO`
+when a request has had no reply for `--no-response-retries` x
+`--repair-timeout` (1 s by default). The overlay (`F3`) shows the current
+timeout and the smoothed round trip.
+
+## Playout buffer
+
+Wi-Fi delivers MIA's replies unevenly: most arrive within a few milliseconds,
+some much later. The client asks for frames on a fixed cadence, so with
+`--playout-delay 60ms` it shows each frame 60 ms after asking for it instead of
+the moment it arrives. Replies that are up to that late still appear on time,
+so motion stays even, at the cost of that much extra lag on the picture and on
+seeing your own key presses. A frame that arrives after its slot is shown at
+once and counted as `late` on the overlay (`F3`), which also shows the delay,
+the frames waiting and the frames shown. The buffer cannot hide a stall longer
+than the delay, and it cannot bring back motion MIA never sent: while the link
+is stalled MIA keeps collecting changes, and they arrive as one bigger frame.
+Values between `40ms` and `80ms` are a good start; it is off by default.
 
 ## Input reconnection
 

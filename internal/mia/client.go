@@ -18,6 +18,9 @@ type ClientConfig struct {
 	RepairTimeout     time.Duration
 	NoResponseRetries int
 	LogFrames         bool
+	// PlayoutDelay, when above zero, holds each frame until this long after
+	// its request was sent before showing it (see playout.go).
+	PlayoutDelay time.Duration
 
 	// OnSessionEstablished runs on the client goroutine every time MIA answers a
 	// HELLO with a new video session. A MIA reset drops the video and the input
@@ -36,6 +39,16 @@ type Stats struct {
 	Reconnects       uint64
 	LastDirtyPages   int
 	LastStatus       string
+	// RepairTimeout is the quiet time the client currently waits before a
+	// retry or NACK, and SmoothedRTT the round trip it is based on.
+	RepairTimeout time.Duration
+	SmoothedRTT   time.Duration
+	// Playout buffer, when enabled: frames waiting, frames shown, and frames
+	// that arrived after their slot.
+	PlayoutDelay  time.Duration
+	PlayoutQueued int
+	PlayoutShown  uint64
+	PlayoutLate   uint64
 }
 
 type Client struct {
@@ -58,9 +71,12 @@ type Client struct {
 	lastCompleteFrameID uint32
 	nextRequestID       uint16
 	nextRequestAt       time.Time
+	lastRequestStart    time.Time
 	nextHelloAt         time.Time
 	requestInterval     time.Duration
 	pending             *pendingResponse
+	rtt                 rttEstimator
+	playout             *playout
 	frameLog            *os.File
 }
 
@@ -72,6 +88,29 @@ type pendingResponse struct {
 	chunks                 map[uint16][]byte
 	deadline               time.Time
 	retriesWithoutResponse int
+	// sentAt is when the request was first sent; the first reply to an
+	// unretried request gives a round-trip sample (a reply to a retried one
+	// could answer either copy, so it is not measured).
+	sentAt   time.Time
+	measured bool
+	nacks    int
+}
+
+// slowResponseLog is how long a request may take, from first send to its
+// complete reply, before the client logs it as a visible stall.
+const slowResponseLog = 250 * time.Millisecond
+
+// logIfSlow reports a response that held the picture still long enough to
+// notice, with what the client did meanwhile, so a freeze can be matched to
+// lost requests, lost chunks or a link that went quiet.
+func (c *Client) logIfSlow(p *pendingResponse, what string) {
+	took := time.Since(p.sentAt)
+	if took < slowResponseLog {
+		return
+	}
+	log.Printf("video: slow %s: %s after the request (%d request retries, %d NACKs, %d of %d chunks, repair timeout %s)",
+		what, took.Round(time.Millisecond), p.retriesWithoutResponse, p.nacks,
+		len(p.chunks), p.chunkCount, c.rtt.Timeout())
 }
 
 func NewClient(cfg ClientConfig) *Client {
@@ -82,6 +121,8 @@ func NewClient(cfg ClientConfig) *Client {
 		mirror:          make([]byte, VideoStateSize),
 		nextRequestID:   1,
 		requestInterval: time.Second / time.Duration(cfg.RequestFPS),
+		rtt:             newRTTEstimator(cfg.RepairTimeout),
+		playout:         newPlayoutIfEnabled(cfg.PlayoutDelay),
 		stats: Stats{
 			LastStatus: "starting",
 		},
@@ -140,6 +181,11 @@ func (c *Client) Snapshot(dst []byte) []byte {
 		dst = make([]byte, VideoStateSize)
 	}
 
+	if c.playout != nil {
+		c.playout.snapshot(time.Now(), dst)
+		return dst
+	}
+
 	c.mirrorMu.RLock()
 	copy(dst, c.mirror)
 	c.mirrorMu.RUnlock()
@@ -147,11 +193,23 @@ func (c *Client) Snapshot(dst []byte) []byte {
 	return dst
 }
 
+func newPlayoutIfEnabled(delay time.Duration) *playout {
+	if delay <= 0 {
+		return nil
+	}
+	return newPlayout(delay)
+}
+
 func (c *Client) Stats() Stats {
 	c.statsMu.RLock()
-	defer c.statsMu.RUnlock()
+	stats := c.stats
+	c.statsMu.RUnlock()
 
-	return c.stats
+	if c.playout != nil {
+		stats.PlayoutDelay = c.playout.delay
+		stats.PlayoutQueued, stats.PlayoutShown, stats.PlayoutLate = c.playout.stats()
+	}
+	return stats
 }
 
 func (c *Client) run() {
@@ -175,7 +233,20 @@ func (c *Client) run() {
 				c.serviceTimers(time.Now())
 				continue
 			}
-			return
+			select {
+			case <-c.stop:
+				return
+			default:
+			}
+			// Any other read error (the Mac's Wi-Fi dropping or changing
+			// network, an ICMP error) used to end this loop for good: no
+			// more requests or HELLOs, so the screen froze until the client
+			// was restarted, and resetting the computer could not help.
+			// Log it and keep going; the timers reconnect when MIA answers.
+			log.Printf("video: read from MIA failed: %v", err)
+			time.Sleep(10 * time.Millisecond)
+			c.serviceTimers(time.Now())
+			continue
 		}
 
 		packet, err := ParsePacket(buf[:n])
@@ -239,13 +310,16 @@ func (c *Client) serviceTimers(now time.Time) {
 	}
 
 	if c.pending.frameID == 0 {
-		c.pending.retriesWithoutResponse++
-		if c.pending.retriesWithoutResponse >= c.cfg.NoResponseRetries {
+		// The reconnect point stays at NoResponseRetries x the configured
+		// timeout (1 s by default) however short the adaptive retries are.
+		giveUp := time.Duration(c.cfg.NoResponseRetries) * c.cfg.RepairTimeout
+		if now.Sub(c.pending.sentAt) >= giveUp {
 			c.sendHello("no response")
 			return
 		}
+		c.pending.retriesWithoutResponse++
 		c.sendRequest(c.pending.requestID, c.pending.lastCompleteFrameID)
-		c.pending.deadline = now.Add(c.cfg.RepairTimeout)
+		c.pending.deadline = now.Add(c.rtt.Backoff(c.pending.retriesWithoutResponse))
 		return
 	}
 
@@ -254,7 +328,8 @@ func (c *Client) serviceTimers(now time.Time) {
 		return
 	}
 	c.sendNack(c.pending.requestID, c.pending.frameID, missing)
-	c.pending.deadline = now.Add(c.cfg.RepairTimeout)
+	c.pending.nacks++
+	c.pending.deadline = now.Add(c.rtt.Timeout())
 	c.updateStats(func(stats *Stats) {
 		stats.RepairsSent++
 		stats.LastStatus = "repair requested"
@@ -310,6 +385,7 @@ func (c *Client) handleFrameData(packet Packet) {
 		return
 	}
 
+	c.measureRTT()
 	if c.pending.frameID == 0 {
 		c.pending.frameID = packet.Header.FrameID
 		c.pending.chunkCount = packet.Header.ChunkCount
@@ -323,7 +399,7 @@ func (c *Client) handleFrameData(packet Packet) {
 	payload := make([]byte, len(packet.Payload))
 	copy(payload, packet.Payload)
 	c.pending.chunks[packet.Header.ChunkIndex] = payload
-	c.pending.deadline = time.Now().Add(c.cfg.RepairTimeout)
+	c.pending.deadline = time.Now().Add(c.rtt.Timeout())
 
 	if len(c.pending.chunks) != int(c.pending.chunkCount) {
 		return
@@ -347,10 +423,11 @@ func (c *Client) handleFrameData(packet Packet) {
 		}
 	}
 
+	c.logIfSlow(c.pending, "frame")
 	c.lastCompleteFrameID = frameID
 	c.sendAck(requestID, frameID)
 	c.pending = nil
-	c.nextRequestAt = time.Now().Add(c.requestInterval)
+	c.scheduleNextRequest()
 	c.updateStats(func(stats *Stats) {
 		stats.AppliedFrames++
 		stats.LastFrameID = frameID
@@ -372,8 +449,12 @@ func (c *Client) handleStatus(packet Packet) {
 		if c.pending != nil && packet.Header.RequestID != c.pending.requestID {
 			return
 		}
+		if c.pending != nil {
+			c.measureRTT()
+			c.logIfSlow(c.pending, "no-change reply")
+		}
 		c.pending = nil
-		c.nextRequestAt = time.Now().Add(c.requestInterval)
+		c.scheduleNextRequest()
 		c.updateStats(func(stats *Stats) {
 			stats.NoDirtyResponses++
 			stats.LastDirtyPages = 0
@@ -394,10 +475,12 @@ func (c *Client) startRequest(now time.Time) {
 		c.nextRequestID = 1
 	}
 
+	c.lastRequestStart = now
 	c.pending = &pendingResponse{
 		requestID:           requestID,
 		lastCompleteFrameID: c.lastCompleteFrameID,
-		deadline:            now.Add(c.cfg.RepairTimeout),
+		deadline:            now.Add(c.rtt.Timeout()),
+		sentAt:              now,
 	}
 	c.sendRequest(requestID, c.lastCompleteFrameID)
 	c.updateStats(func(stats *Stats) {
@@ -406,7 +489,42 @@ func (c *Client) startRequest(now time.Time) {
 	})
 }
 
+// measureRTT feeds the first reply to an unretried request into the round-trip
+// estimate that sets the repair timeout.
+func (c *Client) measureRTT() {
+	p := c.pending
+	if p == nil || p.measured {
+		return
+	}
+	p.measured = true
+	if p.retriesWithoutResponse != 0 {
+		return
+	}
+	c.rtt.Sample(time.Since(p.sentAt))
+	timeout, srtt := c.rtt.Timeout(), c.rtt.SmoothedRTT()
+	c.updateStats(func(stats *Stats) {
+		stats.RepairTimeout = timeout
+		stats.SmoothedRTT = srtt
+	})
+}
+
+// scheduleNextRequest keeps requests on a fixed cadence measured from when the
+// last one started, so the round trip is not added on top of the interval:
+// with the interval counted from the reply, a 35 ms round trip turned 25
+// requests a second into about 13.
+func (c *Client) scheduleNextRequest() {
+	next := c.lastRequestStart.Add(c.requestInterval)
+	if now := time.Now(); next.Before(now) {
+		next = now
+	}
+	c.nextRequestAt = next
+}
+
 func (c *Client) sendHello(reason string) {
+	if reason != "startup" && reason != "retry" {
+		// Each HELLO costs a full screen refresh; say why it happened.
+		log.Printf("video: reconnecting to MIA: %s", reason)
+	}
 	c.sessionID = 0
 	c.lastCompleteFrameID = 0
 	c.pending = nil
@@ -529,15 +647,11 @@ func (c *Client) applyPendingResponse() ([]pageUpdate, error) {
 	}
 
 	c.mirrorMu.Lock()
-	for _, update := range updates {
-		start := int(update.page) << PageShift
-		validLen := PageSize
-		if start+validLen > VideoStateSize {
-			validLen = VideoStateSize - start
-		}
-		copy(c.mirror[start:start+validLen], update.data[:validLen])
-	}
+	applyUpdates(c.mirror, updates)
 	c.mirrorMu.Unlock()
+	if c.playout != nil {
+		c.playout.push(pending.sentAt, time.Now(), updates)
+	}
 
 	return updates, nil
 }

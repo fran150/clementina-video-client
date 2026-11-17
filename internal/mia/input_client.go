@@ -242,8 +242,13 @@ func (c *InputClient) run() {
 				return
 			default:
 			}
-			c.setError(err)
-			return
+			// A read error on a UDP socket is usually transient (an ICMP
+			// error from a missed packet, a Wi-Fi blip). Keep reading:
+			// returning here stopped the client from ever seeing another
+			// WELCOME, so input stayed dead until restart.
+			c.recordError(err)
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 
 		packet, err := ParseInputPacket(buf[:n])
@@ -353,8 +358,20 @@ func (c *InputClient) sendPacket(packetType uint8, session uint32, payload []byt
 		Session: session,
 	}, payload)
 	if _, err := c.conn.WriteToUDP(packet, c.server); err != nil {
-		c.setError(err)
+		// A failed send loses this one packet, not the session: MIA still
+		// holds it. Dropping the session here made every Wi-Fi hiccup
+		// (no buffer space, host down while the Mac re-resolves MIA's
+		// address) discard key presses until the next HELLO, up to a
+		// RetryInterval later, and replace the session on MIA, which
+		// releases every held key.
+		c.recordError(err)
 	}
+}
+
+func (c *InputClient) recordError(err error) {
+	c.mu.Lock()
+	c.lastError = err.Error()
+	c.mu.Unlock()
 }
 
 func (c *InputClient) setError(err error) {
